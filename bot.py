@@ -31,7 +31,7 @@ BD_TZ = timezone(timedelta(hours=6))
 db = {
     "admins": [OWNER_ID],
     "proxies": {},          
-    "vpn_plans": {},        # VPN Plans: Name -> {price, stock, details}
+    "vpn_plans": {},        
     "orders": {},          
     "deposits": {},        
     "users": {},            
@@ -219,7 +219,7 @@ def handle_message(msg):
             send_msg(chat_id, f"✅ Success! <b>{added}</b> proxies added under <b>{cat}</b>.", reply_markup=main_kb(sender_id))
             return
 
-        # --- VPN Admin States (Name -> Price -> Stock -> Details) ---
+        # --- VPN Admin States ---
         elif state == "adm_wait_vpn_name" and text:
             temp_data[chat_id] = {"vpn_name": text}
             user_states[chat_id] = "adm_wait_vpn_price"
@@ -231,7 +231,7 @@ def handle_message(msg):
                 price = float(text)
                 temp_data[chat_id]["vpn_price"] = price
                 user_states[chat_id] = "adm_wait_vpn_stock"
-                send_msg(chat_id, f"📦 Ei VPN-er <b>Stock (koiti available ase)</b> koto ta sankhay (number) likhe pathan (e.g. 10):", reply_markup=cancel_kb())
+                send_msg(chat_id, f"📦 Ei VPN-er <b>Stock (koiti available ase)</b> koto ta sankhay likhe pathan (e.g. 10):", reply_markup=cancel_kb())
             except ValueError:
                 send_msg(chat_id, "❌ Invalid price! Shudhu number pathan:")
             return
@@ -243,7 +243,7 @@ def handle_message(msg):
             stock = int(text)
             temp_data[chat_id]["vpn_stock"] = stock
             user_states[chat_id] = "adm_wait_vpn_details"
-            send_msg(chat_id, f"📝 Ei VPN-er description ba details likhe pathan (e.g. 30 Days, US Server):", reply_markup=cancel_kb())
+            send_msg(chat_id, f"📝 Ei VPN-er description ba details likhe pathan:", reply_markup=cancel_kb())
             return
 
         elif state == "adm_wait_vpn_details" and text:
@@ -259,24 +259,19 @@ def handle_message(msg):
 
             del user_states[chat_id]
             del temp_data[chat_id]
-            send_msg(chat_id, f"✅ Success! VPN Plan <b>{v_name}</b> added successfully with stock <b>{v_stock}</b>.", reply_markup=main_kb(sender_id))
+            send_msg(chat_id, f"✅ Success! VPN Plan <b>{v_name}</b> added successfully.", reply_markup=main_kb(sender_id))
             return
 
-        # --- Admin Editing Stock ---
         elif state == "adm_edit_vpn_stock_val" and text:
             if not text.isdigit():
                 send_msg(chat_id, "❌ Shudhu valid number pathan:")
                 return
             new_stock = int(text)
             v_name = temp_data[chat_id]["edit_vpn_name"]
-            
             if v_name in db["vpn_plans"]:
                 db["vpn_plans"][v_name]["stock"] = new_stock
                 save_data()
-                send_msg(chat_id, f"✅ VPN <b>{v_name}</b> stock successfully updated to <b>{new_stock}</b>!", reply_markup=main_kb(sender_id))
-            else:
-                send_msg(chat_id, "❌ VPN plan paoa jayni!")
-            
+                send_msg(chat_id, f"✅ VPN <b>{v_name}</b> stock updated to <b>{new_stock}</b>!", reply_markup=main_kb(sender_id))
             del user_states[chat_id]
             del temp_data[chat_id]
             return
@@ -309,6 +304,13 @@ def handle_message(msg):
             send_msg(chat_id, f"📤 Ekhon payment-er <b>Screenshot (Photo)</b> upload korun:", reply_markup=cancel_kb())
             return
 
+        # --- VPN Manual Trx State (FIXED) ---
+        elif state == "vpn_wait_trx":
+            temp_data[chat_id]["vpn_trx"] = text
+            user_states[chat_id] = "vpn_wait_screenshot"
+            send_msg(chat_id, f"📤 Ekhon payment-er <b>Screenshot (Photo)</b> upload korun:", reply_markup=cancel_kb())
+            return
+
         elif state == "adm_wait_user_id_for_balance" and text:
             if not text.isdigit():
                 send_msg(chat_id, "❌ Valid User ID din:", reply_markup=cancel_kb())
@@ -330,7 +332,7 @@ def handle_message(msg):
                 del user_states[chat_id]
                 del temp_data[chat_id]
                 current_bal = db["users"][target_uid]["balance"]
-                send_msg(chat_id, f"✅ Balance update kora hoyeche!\n👤 User ID: <code>{target_uid}</code>\n💰 New Balance: <b>{current_bal}</b>", reply_markup=main_kb(sender_id))
+                send_msg(chat_id, f"✅ Balance updated!\n👤 User ID: <code>{target_uid}</code>\n💰 New Balance: <b>{current_bal}</b>", reply_markup=main_kb(sender_id))
             except ValueError:
                 send_msg(chat_id, "❌ Sothik number likhun:", reply_markup=cancel_kb())
             return
@@ -359,10 +361,8 @@ def handle_message(msg):
         elif state == "adm_set_limits" and text:
             try:
                 parts = text.split(",")
-                min_p = int(parts[0].strip())
-                max_p = int(parts[1].strip())
-                db["settings"]["min_purchase"] = min_p
-                db["settings"]["max_purchase"] = max_p
+                db["settings"]["min_purchase"] = int(parts[0].strip())
+                db["settings"]["max_purchase"] = int(parts[1].strip())
                 save_data()
                 del user_states[chat_id]
                 send_msg(chat_id, f"✅ Limits updated!", reply_markup=main_kb(sender_id))
@@ -416,6 +416,23 @@ def handle_message(msg):
             send_msg(chat_id, f"📤 Ekhon payment-er <b>Screenshot (Photo)</b> upload korun:", reply_markup=cancel_kb())
             return
 
+        # --- Admin Sending VPN Details (FIXED) ---
+        elif state == "adm_wait_vpn_details" and is_admin(chat_id):
+            order_id = temp_data[chat_id]["deliver_order_id"]
+            vpn_details = text
+            load_data()
+            order = db.get("orders", {}).get(order_id)
+            if order:
+                order["status"] = "delivered"
+                save_data()
+                send_msg(order["user_id"], f"✅ <b>Apnar VPN Order Delivered!</b>\n\n📦 Order ID: <code>{order_id}</code>\n🔒 VPN: <b>{order['vpn_name']}</b>\n\n🔑 <b>Details:</b>\n{vpn_details}")
+                send_msg(chat_id, f"✅ VPN details delivered successfully!", reply_markup=main_kb(chat_id))
+            else:
+                send_msg(chat_id, "❌ Order paoa jayni!")
+            del user_states[chat_id]
+            del temp_data[chat_id]
+            return
+
     # Handle Photo for Deposit
     if "photo" in msg and chat_id in user_states and user_states[chat_id] == "dep_wait_screenshot":
         photo_id = msg["photo"][-1]["file_id"]
@@ -453,6 +470,38 @@ def handle_message(msg):
         save_data()
 
         send_msg(chat_id, f"✅ Deposit request submitted successfully!", reply_markup=main_kb(sender_id))
+        del user_states[chat_id]
+        del temp_data[chat_id]
+        return
+
+    # Handle Photo for Manual VPN Order
+    if "photo" in msg and chat_id in user_states and user_states[chat_id] == "vpn_wait_screenshot":
+        photo_id = msg["photo"][-1]["file_id"]
+        data = temp_data[chat_id]
+        order_id = f"VPN-{int(time.time())}"
+        if "orders" not in db: db["orders"] = {}
+        db["orders"][order_id] = {
+            "type": "vpn", "user_id": chat_id, "username": username,
+            "vpn_name": data["vpn_name"], "total": data["vpn_price"],
+            "method": "Manual", "trx": data["vpn_trx"], "screenshot": photo_id, "status": "pending"
+        }
+        save_data()
+
+        admin_caption = f"""🔔 <b>New Manual VPN Order!</b>
+🆔 ID: <code>{order_id}</code>
+👤 User: @{username} (<code>{chat_id}</code>)
+🔒 VPN: <b>{data['vpn_name']}</b> | Price: <b>{data['vpn_price']}</b> | TrxID: <code>{data['vpn_trx']}</code>"""
+
+        admin_kb_markup = {"inline_keyboard": [[{"text": "📤 Send VPN Details", "callback_data": f"vpn_deliver_{order_id}", "style": "success"}, {"text": "❌ Reject", "callback_data": f"ord_rej_{order_id}", "style": "danger"}]]}
+
+        for adm in db.get("admins", [OWNER_ID]):
+            res_msg = api_call("sendPhoto", {"chat_id": adm, "photo": photo_id, "caption": admin_caption, "parse_mode": "HTML", "reply_markup": admin_kb_markup})
+            if res_msg.get("ok"):
+                if "admin_msgs" not in db["orders"][order_id]: db["orders"][order_id]["admin_msgs"] = {}
+                db["orders"][order_id]["admin_msgs"][str(adm)] = res_msg["result"]["message_id"]
+        save_data()
+
+        send_msg(chat_id, f"✅ VPN order submitted successfully!", reply_markup=main_kb(sender_id))
         del user_states[chat_id]
         del temp_data[chat_id]
         return
@@ -626,6 +675,11 @@ def handle_callback(call):
     elif data == "pay_vpn_balance":
         user_data = db.get("users", {}).get(str(chat_id), {})
         balance = user_data.get("balance", 0.0)
+        
+        if chat_id not in temp_data:
+            edit_msg(chat_id, msg_id, "❌ Session expired. Please try again.")
+            return
+
         v_name = temp_data[chat_id]["vpn_name"]
         v_price = temp_data[chat_id]["vpn_price"]
         v_info = db["vpn_plans"].get(v_name)
@@ -667,6 +721,9 @@ def handle_callback(call):
 
     elif data == "pay_vpn_manual":
         bkash_no = db.get("settings", {}).get("bkash", "017XXXXXXXX")
+        if chat_id not in temp_data:
+            edit_msg(chat_id, msg_id, "❌ Session expired.")
+            return
         v_price = temp_data[chat_id]["vpn_price"]
         temp_data[chat_id]["method"] = "bKash/Binance"
         user_states[chat_id] = "vpn_wait_trx"
@@ -692,6 +749,7 @@ def handle_callback(call):
     elif data == "pay_balance":
         user_data = db.get("users", {}).get(str(chat_id), {})
         balance = user_data.get("balance", 0.0)
+        if chat_id not in temp_data: return
         total = temp_data[chat_id]["total"]
         cat = temp_data[chat_id]["category"]
         qty = temp_data[chat_id]["qty"]
@@ -735,6 +793,7 @@ def handle_callback(call):
 
     elif data == "pay_bkash":
         bkash_no = db.get("settings", {}).get("bkash", "017XXXXXXXX")
+        if chat_id not in temp_data: return
         total = temp_data[chat_id]["total"]
         temp_data[chat_id]["method"] = "bKash"
         user_states[chat_id] = "user_wait_trx"
@@ -742,6 +801,7 @@ def handle_callback(call):
 
     elif data == "pay_binance":
         binance_id = db.get("settings", {}).get("binance", "123456789")
+        if chat_id not in temp_data: return
         total = temp_data[chat_id]["total"]
         temp_data[chat_id]["method"] = "Binance Pay"
         user_states[chat_id] = "user_wait_trx"
@@ -832,7 +892,7 @@ def handle_callback(call):
         elif data == "adm_manage_admins":
             adms = db.get("admins", [OWNER_ID])
             kb = [[{"text": f"👤 {aid}", "callback_data": "none"}] for aid in adms]
-            kb.append([{"text": "➕ Add Admin", "callback_data": "adm_add_admin_btn", "style": "success"}],)
+            kb.append([{"text": "➕ Add Admin", "callback_data": "adm_add_admin_btn", "style": "success"}])
             kb.append([{"text": "Back", "callback_data": "admin_main"}])
             edit_msg(chat_id, msg_id, "👑 <b>Admin List</b>", reply_markup={"inline_keyboard": kb})
 
@@ -867,61 +927,10 @@ def handle_callback(call):
         elif data == "admin_main":
             edit_msg(chat_id, msg_id, f"📊 <b>Admin Control Console</b>", reply_markup=admin_kb())
 
-    # Delivery VPN Details to User
-    if chat_id in user_states and user_states[chat_id] == "adm_wait_vpn_details" and is_admin(chat_id):
-        order_id = temp_data[chat_id]["deliver_order_id"]
-        vpn_details = text
-        order = db.get("orders", {}).get(order_id)
-        if order:
-            order["status"] = "delivered"
-            save_data()
-            send_msg(order["user_id"], f"✅ <b>Apnar VPN Order Delivered!</b>\n\n📦 Order ID: <code>{order_id}</code>\n🔒 VPN: <b>{order['vpn_name']}</b>\n\n🔑 <b>Details:</b>\n{vpn_details}")
-            send_msg(chat_id, f"✅ VPN details delivered successfully!", reply_markup=main_kb(chat_id))
-        del user_states[chat_id]
-        del temp_data[chat_id]
-        return
-
-    if chat_id in user_states and user_states[chat_id] == "vpn_wait_trx":
-        temp_data[chat_id]["vpn_trx"] = text
-        user_states[chat_id] = "vpn_wait_screenshot"
-        send_msg(chat_id, f"📤 Ekhon payment-er <b>Screenshot (Photo)</b> upload korun:", reply_markup=cancel_kb())
-        return
-
-    if "photo" in msg and chat_id in user_states and user_states[chat_id] == "vpn_wait_screenshot":
-        photo_id = msg["photo"][-1]["file_id"]
-        data = temp_data[chat_id]
-        order_id = f"VPN-{int(time.time())}"
-        if "orders" not in db: db["orders"] = {}
-        db["orders"][order_id] = {
-            "type": "vpn", "user_id": chat_id, "username": username,
-            "vpn_name": data["vpn_name"], "total": data["vpn_price"],
-            "method": "Manual", "trx": data["vpn_trx"], "screenshot": photo_id, "status": "pending"
-        }
-        save_data()
-
-        admin_caption = f"""🔔 <b>New Manual VPN Order!</b>
-🆔 ID: <code>{order_id}</code>
-👤 User: @{username} (<code>{chat_id}</code>)
-🔒 VPN: <b>{data['vpn_name']}</b> | Price: <b>{data['vpn_price']}</b> | TrxID: <code>{data['vpn_trx']}</code>"""
-
-        admin_kb_markup = {"inline_keyboard": [[{"text": "📤 Send VPN Details", "callback_data": f"vpn_deliver_{order_id}", "style": "success"}, {"text": "❌ Reject", "callback_data": f"ord_rej_{order_id}", "style": "danger"}]]}
-
-        for adm in db.get("admins", [OWNER_ID]):
-            res_msg = api_call("sendPhoto", {"chat_id": adm, "photo": photo_id, "caption": admin_caption, "parse_mode": "HTML", "reply_markup": admin_kb_markup})
-            if res_msg.get("ok"):
-                if "admin_msgs" not in db["orders"][order_id]: db["orders"][order_id]["admin_msgs"] = {}
-                db["orders"][order_id]["admin_msgs"][str(adm)] = res_msg["result"]["message_id"]
-        save_data()
-
-        send_msg(chat_id, f"✅ VPN order submitted successfully!", reply_markup=main_kb(sender_id))
-        del user_states[chat_id]
-        del temp_data[chat_id]
-        return
-
 def main():
     offset = None
     executor = ThreadPoolExecutor(max_workers=20)
-    print("🚀 Bot is running with Advanced VPN Stock & Balance Deposit system...")
+    print("🚀 Bot is running with Fixed VPN Payment & Manual Trx flow...")
     while True:
         try:
             updates = api_call("getUpdates", {"timeout": 30, "offset": offset})
