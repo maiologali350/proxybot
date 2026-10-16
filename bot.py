@@ -383,6 +383,19 @@ def handle_message(msg):
                 save_data()
                 send_msg(order["user_id"], f"✅ <b>VPN Order Delivered!</b>\n\n🔑 <b>Details:</b>\n{text}")
                 send_msg(chat_id, f"✅ VPN details delivered!", reply_markup=main_kb(sender_id))
+                
+                admin_msgs = order.get("admin_msgs", {})
+                for adm_id, adm_msg_id in admin_msgs.items():
+                    try:
+                        api_call("editMessageCaption", {
+                            "chat_id": int(adm_id),
+                            "message_id": adm_msg_id,
+                            "caption": f"✅ <b>VPN Order Delivered Successfully!</b>\n🆔 ID: <code>{order_id}</code>",
+                            "parse_mode": "HTML",
+                            "reply_markup": {"inline_keyboard": []}
+                        })
+                    except Exception:
+                        pass
             del user_states[chat_id]
             del temp_data[chat_id]
             return
@@ -409,7 +422,11 @@ def handle_message(msg):
             db["orders"][order_id] = {"type": "vpn", "user_id": chat_id, "username": username, "vpn_name": data["vpn_name"], "total": data["vpn_price"], "method": "Manual", "trx": data["vpn_trx"], "status": "pending"}
             save_data()
             for adm in db.get("admins", [OWNER_ID]):
-                api_call("sendPhoto", {"chat_id": adm, "photo": photo_id, "caption": f"🔔 <b>VPN Order!</b>\nID: {order_id}\nUser: @{username}\nVPN: {data['vpn_name']}\nPrice: {data['vpn_price']}", "parse_mode": "HTML", "reply_markup": {"inline_keyboard": [[{"text": "📤 Send Details", "callback_data": f"vpn_deliver_{order_id}"}, {"text": "❌ Reject", "callback_data": f"ord_rej_{order_id}"}]]}})
+                res_msg = api_call("sendPhoto", {"chat_id": adm, "photo": photo_id, "caption": f"🔔 <b>VPN Order!</b>\nID: {order_id}\nUser: @{username}\nVPN: {data['vpn_name']}\nPrice: {data['vpn_price']}", "parse_mode": "HTML", "reply_markup": {"inline_keyboard": [[{"text": "📤 Send Details", "callback_data": f"vpn_deliver_{order_id}"}, {"text": "❌ Reject", "callback_data": f"ord_rej_{order_id}"}]]}})
+                if res_msg.get("ok"):
+                    if "admin_msgs" not in db["orders"][order_id]: db["orders"][order_id]["admin_msgs"] = {}
+                    db["orders"][order_id]["admin_msgs"][str(adm)] = res_msg["result"]["message_id"]
+            save_data()
             send_msg(chat_id, f"✅ VPN order submitted!", reply_markup=main_kb(sender_id))
             del user_states[chat_id]
             del temp_data[chat_id]
@@ -507,17 +524,19 @@ def handle_callback(call):
             edit_msg(chat_id, msg_id, "❌ Deposit Rejected.")
 
     elif data.startswith("buyvpn_"):
-        v_name = data.replace("buyvpn_", "")
-        v_info = db.get("vpn_plans", {}).get(v_name)
+        vpn_name = data.replace("buyvpn_", "")
+        v_info = db.get("vpn_plans", {}).get(vpn_name)
         if not v_info or v_info["stock"] <= 0:
             api_call("answerCallbackQuery", {"callback_query_id": call["id"], "text": "Stock out!", "show_alert": True})
             return
-        temp_data[chat_id] = {"vpn_name": v_name, "vpn_price": v_info["price"]}
+        temp_data[chat_id] = {"vpn_name": vpn_name, "vpn_price": v_info["price"]}
         pay_kb = {"inline_keyboard": [[{"text": "💰 Pay from Wallet", "callback_data": "pay_vpn_balance"}], [{"text": "🟢 Manual Payment", "callback_data": "pay_vpn_manual"}]]}
-        edit_msg(chat_id, msg_id, f"🔒 <b>{v_name}</b>\nPrice: <b>{v_info['price']}</b>\nSelect payment method:", reply_markup=pay_kb)
+        edit_msg(chat_id, msg_id, f"🔒 <b>{vpn_name}</b>\nPrice: <b>{v_info['price']}</b>\nSelect payment method:", reply_markup=pay_kb)
 
     elif data == "pay_vpn_balance":
-        if chat_id not in temp_data: return
+        if chat_id not in temp_data:
+            edit_msg(chat_id, msg_id, "❌ Session expired. Please select VPN again.")
+            return
         v_name = temp_data[chat_id]["vpn_name"]
         v_price = temp_data[chat_id]["vpn_price"]
         u_key = str(chat_id)
@@ -525,14 +544,27 @@ def handle_callback(call):
         if bal < v_price:
             api_call("answerCallbackQuery", {"callback_query_id": call["id"], "text": "Insufficient balance!", "show_alert": True})
             return
+        
+        # Check stock again
+        v_info = db.get("vpn_plans", {}).get(v_name)
+        if not v_info or v_info["stock"] <= 0:
+            api_call("answerCallbackQuery", {"callback_query_id": call["id"], "text": "Stock out!", "show_alert": True})
+            return
+
         db["users"][u_key]["balance"] -= v_price
         db["vpn_plans"][v_name]["stock"] -= 1
         order_id = f"VPN-{int(time.time())}"
         if "orders" not in db: db["orders"] = {}
         db["orders"][order_id] = {"type": "vpn", "user_id": chat_id, "username": username, "vpn_name": v_name, "total": v_price, "method": "Wallet", "status": "pending_admin_delivery"}
         save_data()
+
         for adm in db.get("admins", [OWNER_ID]):
-            api_call("sendMessage", {"chat_id": adm, "text": f"🔔 <b>VPN Order (Wallet)!</b>\nID: {order_id}\nUser: @{username}\nVPN: {v_name}", "parse_mode": "HTML", "reply_markup": {"inline_keyboard": [[{"text": "📤 Send Details", "callback_data": f"vpn_deliver_{order_id}"}]]}})
+            res_msg = api_call("sendMessage", {"chat_id": adm, "text": f"🔔 <b>VPN Order (Wallet)!</b>\nID: {order_id}\nUser: @{username}\nVPN: {v_name}", "parse_mode": "HTML", "reply_markup": {"inline_keyboard": [[{"text": "📤 Send Details", "callback_data": f"vpn_deliver_{order_id}"}]]}})
+            if res_msg.get("ok"):
+                if "admin_msgs" not in db["orders"][order_id]: db["orders"][order_id]["admin_msgs"] = {}
+                db["orders"][order_id]["admin_msgs"][str(adm)] = res_msg["result"]["message_id"]
+        save_data()
+
         edit_msg(chat_id, msg_id, f"✅ Order successful! Admin details pathiye dibe.")
         send_msg(chat_id, "Main menu:", reply_markup=main_kb(chat_id))
         del temp_data[chat_id]
@@ -546,7 +578,7 @@ def handle_callback(call):
         order_id = data.replace("vpn_deliver_", "")
         user_states[chat_id] = "adm_wait_vpn_details"
         temp_data[chat_id] = {"deliver_order_id": order_id}
-        edit_msg(chat_id, msg_id, f"📥 VPN Details likhe pathan:")
+        edit_msg(chat_id, msg_id, f"📥 Order ID <code>{order_id}</code> er jonno <b>VPN Details</b> likhe pathan:")
 
     elif data.startswith("buycat_"):
         cat = data.replace("buycat_", "")
@@ -656,7 +688,7 @@ def handle_callback(call):
             if v_name in db["vpn_plans"]:
                 del db["vpn_plans"][v_name]
                 save_data()
-            edit_msg(chat_id, msg_id, f"✅ Deleted VPN!", reply_markup={"inline_keyboard": [[{"text": "Back", "callback_data": "admin_manage_vpn"}]]})
+            edit_msg(chat_id, msg_id, f"✅ Deleted VPN!", reply_markup={"inline_keyboard": [[{"text": "Back", "callback_data": "adm_manage_vpn"}]]})
         elif data == "adm_balance_menu":
             user_states[chat_id] = "adm_wait_user_id_for_balance"
             edit_msg(chat_id, msg_id, "👤 User ID pathan:", reply_markup=cancel_kb())
@@ -680,7 +712,7 @@ def handle_callback(call):
 def main():
     offset = None
     executor = ThreadPoolExecutor(max_workers=20)
-    print("🚀 Bot is running with Supabase REST API (No HTTPCore/Python 3.14 issue)...")
+    print("🚀 Bot is running with Fully Fixed VPN Wallet & Delivery flow...")
     while True:
         try:
             updates = api_call("getUpdates", {"timeout": 30, "offset": offset})
