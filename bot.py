@@ -11,8 +11,8 @@ from supabase import create_client, Client
 
 # ================= Load Environment Variables =================
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8660352533:AAHgcFG8EADe-m1HiIgUYnfJub9GCjbGQMM")
-OWNER_ID_STR = os.getenv("OWNER_ID", "903018274")
+BOT_TOKEN ="8660352533:AAHgcFG8EADe-m1HiIgUYnfJub9GCjbGQMM"
+OWNER_ID_STR ="903018274"
 
 if not BOT_TOKEN or not OWNER_ID_STR:
     print("❌ Error: Please configure BOT_TOKEN and OWNER_ID!")
