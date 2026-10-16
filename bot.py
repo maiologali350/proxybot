@@ -7,24 +7,15 @@ import threading
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
-from supabase import create_client, Client
 
 # ================= Load Environment Variables =================
 load_dotenv()
-BOT_TOKEN ="8660352533:AAHgcFG8EADe-m1HiIgUYnfJub9GCjbGQMM"
-OWNER_ID_STR ="903018274"
 
-if not BOT_TOKEN or not OWNER_ID_STR:
-    print("❌ Error: Please configure BOT_TOKEN and OWNER_ID!")
-    exit(1)
-
-OWNER_ID = int(OWNER_ID_STR)
+BOT_TOKEN = "8660352533:AAHgcFG8EADe-m1HiIgUYnfJub9GCjbGQMM"
+OWNER_ID = 903018274
 
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 FILE_URL = f"https://api.telegram.org/file/bot{BOT_TOKEN}/"
-
-# Global Supabase Client
-supabase: Client = None
 
 file_lock = threading.Lock()
 BD_TZ = timezone(timedelta(hours=6))
@@ -50,40 +41,26 @@ db = {
 user_states = {}
 temp_data = {}
 
-def init_supabase():
-    global supabase
-    s_url = db.get("settings", {}).get("supabase_url", "")
-    s_key = db.get("settings", {}).get("supabase_key", "")
-    if s_url and s_key:
-        try:
-            supabase = create_client(s_url, s_key)
-            print("✅ Connected to Supabase Successfully!")
-        except Exception as e:
-            print(f"❌ Supabase Connection Error: {e}")
-
 def load_data():
     global db
-    # Local fallback load first
-    if OWNER_ID not in db["admins"]:
-        db["admins"].append(OWNER_ID)
-    if "settings" not in db: db["settings"] = {}
-    
-    s_url = db["settings"].get("supabase_url", "")
-    s_key = db["settings"].get("supabase_key", "")
+    s_url = db.get("settings", {}).get("supabase_url", "")
+    s_key = db.get("settings", {}).get("supabase_key", "")
     
     if s_url and s_key:
         try:
-            global supabase
-            if not supabase:
-                supabase = create_client(s_url, s_key)
-            res = supabase.table("bot_storage").select("*").eq("key", "main_db").execute()
-            if res.data and len(res.data) > 0:
-                data = res.data[0].get("value", {})
-                if isinstance(data, dict):
-                    db.update(data)
+            headers = {"apikey": s_key, "Authorization": f"Bearer {s_key}"}
+            res = requests.get(f"{s_url}/rest/v1/bot_storage?key=eq.main_db", headers=headers, timeout=10)
+            if res.status_code == 200:
+                data = res.json()
+                if data and len(data) > 0:
+                    val = data[0].get("value", {})
+                    if isinstance(val, dict):
+                        db.update(val)
         except Exception as e:
-            print(f"Error loading from Supabase: {e}")
+            print(f"Error loading from Supabase REST: {e}")
 
+    if OWNER_ID not in db["admins"]:
+        db["admins"].append(OWNER_ID)
     if "support" not in db["settings"]:
         db["settings"]["support"] = "anik2000"
     if "deposits" not in db:
@@ -97,16 +74,13 @@ def save_data():
         s_key = db["settings"].get("supabase_key", "")
         if s_url and s_key:
             try:
-                global supabase
-                if not supabase:
-                    supabase = create_client(s_url, s_key)
-                supabase.table("bot_storage").upsert({"key": "main_db", "value": db}).execute()
+                headers = {"apikey": s_key, "Authorization": f"Bearer {s_key}", "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates"}
+                payload = {"key": "main_db", "value": db}
+                requests.post(f"{s_url}/rest/v1/bot_storage", headers=headers, json=payload, timeout=10)
             except Exception as e:
-                print(f"Error saving to Supabase: {e}")
+                print(f"Error saving to Supabase REST: {e}")
 
-# Initial load
 load_data()
-init_supabase()
 
 session = requests.Session()
 
@@ -198,7 +172,7 @@ def handle_message(msg):
         if state == "adm_set_supabase_url" and text:
             temp_data[chat_id] = {"sup_url": text}
             user_states[chat_id] = "adm_set_supabase_key"
-            send_msg(chat_id, f"🔑 Ekhon apnar Supabase <b>API Key (anon/service_role)</b> ti likhe pathan:", reply_markup=cancel_kb())
+            send_msg(chat_id, f"🔑 Ekhon apnar Supabase <b>API Key</b> ti likhe pathan:", reply_markup=cancel_kb())
             return
 
         elif state == "adm_set_supabase_key" and text:
@@ -208,17 +182,16 @@ def handle_message(msg):
             db["settings"]["supabase_url"] = s_url
             db["settings"]["supabase_key"] = s_key
             save_data()
-            init_supabase()
             
             del user_states[chat_id]
             del temp_data[chat_id]
-            send_msg(chat_id, f"✅ Supabase URL & Key successfully updated and connected!", reply_markup=main_kb(sender_id))
+            send_msg(chat_id, f"✅ Supabase config updated successfully!", reply_markup=main_kb(sender_id))
             return
 
         elif state == "adm_wait_cat" and text:
             temp_data[chat_id] = {"category": text}
             user_states[chat_id] = "adm_wait_price"
-            send_msg(chat_id, f"📌 Category: <b>{text}</b>\n\nEkhon ei category-er <b>per proxy price</b> koto hobe ta likhe pathan:")
+            send_msg(chat_id, f"📌 Category: <b>{text}</b>\n\nPer proxy price koto hobe likhe pathan:")
             return
 
         elif state == "adm_wait_price" and text:
@@ -226,9 +199,9 @@ def handle_message(msg):
                 price = float(text)
                 temp_data[chat_id]["price"] = price
                 user_states[chat_id] = "adm_wait_proxies"
-                send_msg(chat_id, f"📤 Ekhon proxy gulo pathan (.txt file upload ba text paste korun):", reply_markup=cancel_kb())
+                send_msg(chat_id, f"📤 Proxy gulo pathan (.txt file ba text):", reply_markup=cancel_kb())
             except ValueError:
-                send_msg(chat_id, "❌ Invalid price! Shudhu number pathan:")
+                send_msg(chat_id, "❌ Invalid price!")
             return
 
         elif state == "adm_wait_proxies":
@@ -241,14 +214,8 @@ def handle_message(msg):
                     if f_path:
                         file_res = requests.get(f"{FILE_URL}{f_path}")
                         if file_res.status_code == 200:
-                            content = None
-                            for enc in ['utf-8', 'utf-16', 'latin-1', 'cp1252']:
-                                try:
-                                    content = file_res.content.decode(enc)
-                                    break
-                                except UnicodeDecodeError:
-                                    continue
-                            if content: raw_lines = content.splitlines()
+                            content = file_res.content.decode('utf-8', errors='ignore')
+                            raw_lines = content.splitlines()
             elif text:
                 raw_lines = text.splitlines()
 
@@ -268,13 +235,13 @@ def handle_message(msg):
             save_data()
             del user_states[chat_id]
             del temp_data[chat_id]
-            send_msg(chat_id, f"✅ Success! <b>{added}</b> proxies added under <b>{cat}</b>.", reply_markup=main_kb(sender_id))
+            send_msg(chat_id, f"✅ Success! <b>{added}</b> proxies added.", reply_markup=main_kb(sender_id))
             return
 
         elif state == "adm_wait_vpn_name" and text:
             temp_data[chat_id] = {"vpn_name": text}
             user_states[chat_id] = "adm_wait_vpn_price"
-            send_msg(chat_id, f"📌 VPN Name: <b>{text}</b>\n\nEkhon ei VPN-er <b>Price</b> koto hobe ta likhe pathan:", reply_markup=cancel_kb())
+            send_msg(chat_id, f"📌 VPN Name: <b>{text}</b>\n\nPrice koto hobe likhe pathan:", reply_markup=cancel_kb())
             return
 
         elif state == "adm_wait_vpn_price" and text:
@@ -282,47 +249,38 @@ def handle_message(msg):
                 price = float(text)
                 temp_data[chat_id]["vpn_price"] = price
                 user_states[chat_id] = "adm_wait_vpn_stock"
-                send_msg(chat_id, f"📦 Ei VPN-er <b>Stock (koiti available ase)</b> sankhay likhe pathan (e.g. 10):", reply_markup=cancel_kb())
+                send_msg(chat_id, f"📦 Stock koiti available ase likhe pathan:", reply_markup=cancel_kb())
             except ValueError:
-                send_msg(chat_id, "❌ Invalid price! Shudhu number pathan:")
+                send_msg(chat_id, "❌ Invalid price!")
             return
 
         elif state == "adm_wait_vpn_stock" and text:
             if not text.isdigit():
                 send_msg(chat_id, "❌ Shudhu valid number pathan:")
                 return
-            stock = int(text)
-            temp_data[chat_id]["vpn_stock"] = stock
+            temp_data[chat_id]["vpn_stock"] = int(text)
             user_states[chat_id] = "adm_wait_vpn_details"
-            send_msg(chat_id, f"📝 Ei VPN-er description ba details likhe pathan:", reply_markup=cancel_kb())
+            send_msg(chat_id, f"📝 VPN description likhe pathan:", reply_markup=cancel_kb())
             return
 
         elif state == "adm_wait_vpn_details" and text:
             v_data = temp_data[chat_id]
-            v_name = v_data["vpn_name"]
-            v_price = v_data["vpn_price"]
-            v_stock = v_data["vpn_stock"]
-            v_desc = text
-
-            if "vpn_plans" not in db: db["vpn_plans"] = {}
-            db["vpn_plans"][v_name] = {"price": v_price, "stock": v_stock, "desc": v_desc}
+            db["vpn_plans"][v_data["vpn_name"]] = {"price": v_data["vpn_price"], "stock": v_data["vpn_stock"], "desc": text}
             save_data()
-
             del user_states[chat_id]
             del temp_data[chat_id]
-            send_msg(chat_id, f"✅ Success! VPN Plan <b>{v_name}</b> added successfully.", reply_markup=main_kb(sender_id))
+            send_msg(chat_id, f"✅ VPN Plan added successfully.", reply_markup=main_kb(sender_id))
             return
 
         elif state == "adm_edit_vpn_stock_val" and text:
             if not text.isdigit():
                 send_msg(chat_id, "❌ Shudhu valid number pathan:")
                 return
-            new_stock = int(text)
             v_name = temp_data[chat_id]["edit_vpn_name"]
             if v_name in db["vpn_plans"]:
-                db["vpn_plans"][v_name]["stock"] = new_stock
+                db["vpn_plans"][v_name]["stock"] = int(text)
                 save_data()
-                send_msg(chat_id, f"✅ VPN <b>{v_name}</b> stock updated to <b>{new_stock}</b>!", reply_markup=main_kb(sender_id))
+                send_msg(chat_id, f"✅ VPN stock updated!", reply_markup=main_kb(sender_id))
             del user_states[chat_id]
             del temp_data[chat_id]
             return
@@ -334,40 +292,27 @@ def handle_message(msg):
                     send_msg(chat_id, "❌ Shothik amount din:")
                     return
                 temp_data[chat_id] = {"dep_amount": amount}
-                
-                pay_kb = {
-                    "inline_keyboard": [
-                        [{"text": "🟢 bKash (Send Money)", "callback_data": "dep_pay_bkash"}],
-                        [{"text": "🟡 Binance Pay", "callback_data": "dep_pay_binance"}],
-                        [{"text": "Cancel", "callback_data": "cancel_state", "style": "danger"}]
-                    ]
-                }
-                send_msg(chat_id, f"💳 Deposit Amount: <b>{amount}</b>\n\nPayment Method select korun:", reply_markup=pay_kb)
+                pay_kb = {"inline_keyboard": [[{"text": "🟢 bKash", "callback_data": "dep_pay_bkash"}], [{"text": "🟡 Binance Pay", "callback_data": "dep_pay_binance"}]]}
+                send_msg(chat_id, f"💳 Deposit Amount: <b>{amount}</b>\nPayment method select korun:", reply_markup=pay_kb)
                 del user_states[chat_id]
             except ValueError:
                 send_msg(chat_id, "❌ Shudhu number pathan:")
             return
 
-        elif state == "dep_wait_trx":
-            temp_data[chat_id]["dep_trx"] = text
-            user_states[chat_id] = "dep_wait_screenshot"
-            send_msg(chat_id, f"📤 Ekhon payment-er <b>Screenshot (Photo)</b> upload korun:", reply_markup=cancel_kb())
-            return
-
-        elif state == "vpn_wait_trx":
-            temp_data[chat_id]["vpn_trx"] = text
-            user_states[chat_id] = "vpn_wait_screenshot"
-            send_msg(chat_id, f"📤 Ekhon payment-er <b>Screenshot (Photo)</b> upload korun:", reply_markup=cancel_kb())
+        elif state == "dep_wait_trx" or state == "vpn_wait_trx":
+            k = "dep_trx" if state == "dep_wait_trx" else "vpn_trx"
+            temp_data[chat_id][k] = text
+            user_states[chat_id] = "dep_wait_screenshot" if state == "dep_wait_trx" else "vpn_wait_screenshot"
+            send_msg(chat_id, f"📤 Payment-er screenshot (photo) upload korun:", reply_markup=cancel_kb())
             return
 
         elif state == "adm_wait_user_id_for_balance" and text:
             if not text.isdigit():
-                send_msg(chat_id, "❌ Valid User ID din:", reply_markup=cancel_kb())
+                send_msg(chat_id, "❌ Valid User ID din:")
                 return
-            target_uid = text.strip()
-            temp_data[chat_id] = {"target_uid": target_uid}
+            temp_data[chat_id] = {"target_uid": text.strip()}
             user_states[chat_id] = "adm_wait_balance_amount"
-            send_msg(chat_id, f"💵 User ID: <code>{target_uid}</code>\n\nKoto taka add ba katte chan ta likhun:", reply_markup=cancel_kb())
+            send_msg(chat_id, f"💵 Koto taka add ba katte chan likhun:", reply_markup=cancel_kb())
             return
 
         elif state == "adm_wait_balance_amount" and text:
@@ -380,10 +325,9 @@ def handle_message(msg):
                 save_data()
                 del user_states[chat_id]
                 del temp_data[chat_id]
-                current_bal = db["users"][target_uid]["balance"]
-                send_msg(chat_id, f"✅ Balance updated!\n👤 User ID: <code>{target_uid}</code>\n💰 New Balance: <b>{current_bal}</b>", reply_markup=main_kb(sender_id))
+                send_msg(chat_id, f"✅ Balance updated!", reply_markup=main_kb(sender_id))
             except ValueError:
-                send_msg(chat_id, "❌ Sothik number likhun:", reply_markup=cancel_kb())
+                send_msg(chat_id, "❌ Sothik number likhun:")
             return
 
         elif state == "adm_broadcast":
@@ -394,7 +338,7 @@ def handle_message(msg):
                 res = api_call("copyMessage", {"chat_id": u_id, "from_chat_id": chat_id, "message_id": msg["message_id"]})
                 if res.get("ok"): count += 1
                 time.sleep(0.03)
-            send_msg(chat_id, f"✅ <b>Broadcast Complete!</b> ({count} users reached)", reply_markup=main_kb(sender_id))
+            send_msg(chat_id, f"✅ Broadcast Complete! ({count} users reached)", reply_markup=main_kb(sender_id))
             return
 
         elif state == "adm_add_admin" and text:
@@ -404,33 +348,7 @@ def handle_message(msg):
                 if aid not in db["admins"]:
                     db["admins"].append(aid)
                     save_data()
-                    send_msg(chat_id, f"✅ Admin ID <code>{aid}</code> added!", reply_markup=main_kb(sender_id))
-            return
-
-        elif state == "adm_set_limits" and text:
-            try:
-                parts = text.split(",")
-                db["settings"]["min_purchase"] = int(parts[0].strip())
-                db["settings"]["max_purchase"] = int(parts[1].strip())
-                save_data()
-                del user_states[chat_id]
-                send_msg(chat_id, f"✅ Limits updated!", reply_markup=main_kb(sender_id))
-            except:
-                send_msg(chat_id, "❌ Sothik format-e din (e.g. 1,20):", reply_markup=cancel_kb())
-            return
-
-        elif state == "adm_set_bkash" and text:
-            db["settings"]["bkash"] = text
-            save_data()
-            del user_states[chat_id]
-            send_msg(chat_id, f"✅ bKash number updated!", reply_markup=main_kb(sender_id))
-            return
-
-        elif state == "adm_set_binance" and text:
-            db["settings"]["binance"] = text
-            save_data()
-            del user_states[chat_id]
-            send_msg(chat_id, f"✅ Binance ID updated!", reply_markup=main_kb(sender_id))
+                    send_msg(chat_id, f"✅ Admin added!", reply_markup=main_kb(sender_id))
             return
 
         elif state == "user_wait_qty":
@@ -441,219 +359,105 @@ def handle_message(msg):
             cat = temp_data[chat_id]["category"]
             stock = len(db["proxies"].get(cat, []))
             if qty > stock:
-                send_msg(chat_id, f"⚠️ Stock insufficient! Current stock is <b>{stock}</b>.")
+                send_msg(chat_id, f"⚠️ Stock insufficient! Current stock: {stock}")
                 return
-            price_per = db["proxies"][cat][0]["price"]
-            total_amt = qty * price_per
+            total_amt = qty * db["proxies"][cat][0]["price"]
             temp_data[chat_id]["qty"] = qty
             temp_data[chat_id]["total"] = total_amt
-
-            pay_kb = {
-                "inline_keyboard": [
-                    [{"text": "💰 Pay from Account Balance", "callback_data": "pay_balance"}],
-                    [{"text": "🟢 bKash (Send Money)", "callback_data": "pay_bkash"}],
-                    [{"text": "🟡 Binance Pay", "callback_data": "pay_binance"}],
-                    [{"text": "Cancel", "callback_data": "cancel_state", "style": "danger"}]
-                ]
-            }
-            send_msg(chat_id, f"💳 <b>Order Summary:</b>\n\nCategory: <b>{cat}</b>\nQuantity: <b>{qty}</b>\nTotal: <b>{total_amt}</b>\n\nPayment method select korun:", reply_markup=pay_kb)
+            pay_kb = {"inline_keyboard": [[{"text": "💰 Wallet Balance", "callback_data": "pay_balance"}], [{"text": "🟢 bKash", "callback_data": "pay_bkash"}], [{"text": "🟡 Binance", "callback_data": "pay_binance"}]]}
+            send_msg(chat_id, f"💳 Total: <b>{total_amt}</b>\nPayment method select korun:", reply_markup=pay_kb)
             return
 
         elif state == "user_wait_trx":
             temp_data[chat_id]["trx"] = text
             user_states[chat_id] = "user_wait_screenshot"
-            send_msg(chat_id, f"📤 Ekhon payment-er <b>Screenshot (Photo)</b> upload korun:", reply_markup=cancel_kb())
+            send_msg(chat_id, f"📤 Payment-er screenshot upload korun:", reply_markup=cancel_kb())
             return
 
         elif state == "adm_wait_vpn_details" and is_admin(chat_id):
             order_id = temp_data[chat_id]["deliver_order_id"]
-            vpn_details = text
             load_data()
             order = db.get("orders", {}).get(order_id)
             if order:
                 order["status"] = "delivered"
                 save_data()
-                user_target = order["user_id"]
-                
-                send_msg(user_target, f"✅ <b>Apnar VPN Order Approved & Delivered!</b>\n\n📦 Order ID: <code>{order_id}</code>\n🔒 VPN Plan: <b>{order['vpn_name']}</b>\n\n🔑 <b>VPN Details:</b>\n{vpn_details}")
-                send_msg(chat_id, f"✅ VPN details successfully delivered to user for order <code>{order_id}</code>!", reply_markup=main_kb(sender_id))
-
-                admin_msgs = order.get("admin_msgs", {})
-                for adm_id, adm_msg_id in admin_msgs.items():
-                    try:
-                        api_call("editMessageCaption", {
-                            "chat_id": int(adm_id),
-                            "message_id": adm_msg_id,
-                            "caption": f"✅ <b>VPN Order Delivered Successfully!</b>\n🆔 Order ID: <code>{order_id}</code>",
-                            "parse_mode": "HTML",
-                            "reply_markup": {"inline_keyboard": []}
-                        })
-                    except Exception:
-                        pass
-            else:
-                send_msg(chat_id, "❌ Order paoa jayni!")
-
+                send_msg(order["user_id"], f"✅ <b>VPN Order Delivered!</b>\n\n🔑 <b>Details:</b>\n{text}")
+                send_msg(chat_id, f"✅ VPN details delivered!", reply_markup=main_kb(sender_id))
             del user_states[chat_id]
             del temp_data[chat_id]
             return
 
-    # Handle Photo for Deposit
-    if "photo" in msg and chat_id in user_states and user_states[chat_id] == "dep_wait_screenshot":
+    if "photo" in msg and chat_id in user_states:
+        state = user_states[chat_id]
         photo_id = msg["photo"][-1]["file_id"]
-        data = temp_data[chat_id]
-        dep_id = f"DEP-{int(time.time())}"
-        if "deposits" not in db: db["deposits"] = {}
-        db["deposits"][dep_id] = {
-            "user_id": chat_id, "username": username,
-            "amount": data["dep_amount"], "method": data["dep_method"],
-            "trx": data["dep_trx"], "screenshot": photo_id, "status": "pending"
-        }
-        save_data()
-
-        admin_caption = f"""🔔 <b>New Balance Deposit Request!</b>
-🆔 ID: <code>{dep_id}</code>
-👤 User: @{username} (<code>{chat_id}</code>)
-💰 Amount: <b>{data['dep_amount']}</b>
-💳 Method: <b>{data['dep_method']}</b>
-📝 TrxID: <code>{data['dep_trx']}</code>"""
-
-        admin_kb_markup = {
-            "inline_keyboard": [
-                [
-                    {"text": "✅ Approve Deposit", "callback_data": f"dep_app_{dep_id}", "style": "success"},
-                    {"text": "❌ Reject", "callback_data": f"dep_rej_{dep_id}", "style": "danger"}
-                ]
-            ]
-        }
-
-        for adm in db.get("admins", [OWNER_ID]):
-            res_msg = api_call("sendPhoto", {"chat_id": adm, "photo": photo_id, "caption": admin_caption, "parse_mode": "HTML", "reply_markup": admin_kb_markup})
-            if res_msg.get("ok"):
-                if "admin_msgs" not in db["deposits"][dep_id]: db["deposits"][dep_id]["admin_msgs"] = {}
-                db["deposits"][dep_id]["admin_msgs"][str(adm)] = res_msg["result"]["message_id"]
-        save_data()
-
-        send_msg(chat_id, f"✅ Deposit request submitted successfully!", reply_markup=main_kb(sender_id))
-        del user_states[chat_id]
-        del temp_data[chat_id]
-        return
-
-    # Handle Photo for Manual VPN Order
-    if "photo" in msg and chat_id in user_states and user_states[chat_id] == "vpn_wait_screenshot":
-        photo_id = msg["photo"][-1]["file_id"]
-        data = temp_data[chat_id]
-        order_id = f"VPN-{int(time.time())}"
-        if "orders" not in db: db["orders"] = {}
-        db["orders"][order_id] = {
-            "type": "vpn", "user_id": chat_id, "username": username,
-            "vpn_name": data["vpn_name"], "total": data["vpn_price"],
-            "method": "Manual", "trx": data["vpn_trx"], "screenshot": photo_id, "status": "pending"
-        }
-        save_data()
-
-        admin_caption = f"""🔔 <b>New Manual VPN Order!</b>
-🆔 ID: <code>{order_id}</code>
-👤 User: @{username} (<code>{chat_id}</code>)
-🔒 VPN: <b>{data['vpn_name']}</b> | Price: <b>{data['vpn_price']}</b> | TrxID: <code>{data['vpn_trx']}</code>"""
-
-        admin_kb_markup = {"inline_keyboard": [[{"text": "📤 Send VPN Details", "callback_data": f"vpn_deliver_{order_id}", "style": "success"}, {"text": "❌ Reject", "callback_data": f"ord_rej_{order_id}", "style": "danger"}]]}
-
-        for adm in db.get("admins", [OWNER_ID]):
-            res_msg = api_call("sendPhoto", {"chat_id": adm, "photo": photo_id, "caption": admin_caption, "parse_mode": "HTML", "reply_markup": admin_kb_markup})
-            if res_msg.get("ok"):
-                if "admin_msgs" not in db["orders"][order_id]: db["orders"][order_id]["admin_msgs"] = {}
-                db["orders"][order_id]["admin_msgs"][str(adm)] = res_msg["result"]["message_id"]
-        save_data()
-
-        send_msg(chat_id, f"✅ VPN order submitted successfully!", reply_markup=main_kb(sender_id))
-        del user_states[chat_id]
-        del temp_data[chat_id]
-        return
-
-    # Handle Photo for Proxy Order
-    if "photo" in msg and chat_id in user_states and user_states[chat_id] == "user_wait_screenshot":
-        photo_id = msg["photo"][-1]["file_id"]
-        data = temp_data[chat_id]
-        order_id = f"ORD-{int(time.time())}"
-        if "orders" not in db: db["orders"] = {}
-        db["orders"][order_id] = {
-            "type": "proxy", "user_id": chat_id, "username": username,
-            "category": data["category"], "qty": data["qty"], "total": data["total"],
-            "method": data["method"], "trx": data["trx"], "screenshot": photo_id, "status": "pending"
-        }
-        save_data()
-
-        admin_caption = f"""🔔 <b>New Proxy Order!</b>
-🆔 ID: <code>{order_id}</code>
-👤 User: @{username} (<code>{chat_id}</code>)
-🌐 Category: <b>{data['category']}</b> | Qty: <b>{data['qty']}</b>
-💰 Total: <b>{data['total']}</b> | TrxID: <code>{data['trx']}</code>"""
-
-        admin_kb_markup = {"inline_keyboard": [[{"text": "✅ Approve", "callback_data": f"ord_app_{order_id}", "style": "success"}, {"text": "❌ Reject", "callback_data": f"ord_rej_{order_id}", "style": "danger"}]]}
-
-        for adm in db.get("admins", [OWNER_ID]):
-            res_msg = api_call("sendPhoto", {"chat_id": adm, "photo": photo_id, "caption": admin_caption, "parse_mode": "HTML", "reply_markup": admin_kb_markup})
-            if res_msg.get("ok"):
-                if "admin_msgs" not in db["orders"][order_id]: db["orders"][order_id]["admin_msgs"] = {}
-                db["orders"][order_id]["admin_msgs"][str(adm)] = res_msg["result"]["message_id"]
-        save_data()
-
-        send_msg(chat_id, f"✅ Proxy order submitted successfully!", reply_markup=main_kb(sender_id))
-        del user_states[chat_id]
-        del temp_data[chat_id]
-        return
+        if state == "dep_wait_screenshot":
+            data = temp_data[chat_id]
+            dep_id = f"DEP-{int(time.time())}"
+            if "deposits" not in db: db["deposits"] = {}
+            db["deposits"][dep_id] = {"user_id": chat_id, "username": username, "amount": data["dep_amount"], "method": data["dep_method"], "trx": data["dep_trx"], "status": "pending"}
+            save_data()
+            for adm in db.get("admins", [OWNER_ID]):
+                api_call("sendPhoto", {"chat_id": adm, "photo": photo_id, "caption": f"🔔 <b>Deposit Request!</b>\nID: {dep_id}\nUser: @{username}\nAmount: {data['dep_amount']}\nTrx: {data['dep_trx']}", "parse_mode": "HTML", "reply_markup": {"inline_keyboard": [[{"text": "✅ Approve", "callback_data": f"dep_app_{dep_id}"}, {"text": "❌ Reject", "callback_data": f"dep_rej_{dep_id}"}]]}})
+            send_msg(chat_id, f"✅ Deposit request submitted!", reply_markup=main_kb(sender_id))
+            del user_states[chat_id]
+            del temp_data[chat_id]
+            return
+        elif state == "vpn_wait_screenshot":
+            data = temp_data[chat_id]
+            order_id = f"VPN-{int(time.time())}"
+            if "orders" not in db: db["orders"] = {}
+            db["orders"][order_id] = {"type": "vpn", "user_id": chat_id, "username": username, "vpn_name": data["vpn_name"], "total": data["vpn_price"], "method": "Manual", "trx": data["vpn_trx"], "status": "pending"}
+            save_data()
+            for adm in db.get("admins", [OWNER_ID]):
+                api_call("sendPhoto", {"chat_id": adm, "photo": photo_id, "caption": f"🔔 <b>VPN Order!</b>\nID: {order_id}\nUser: @{username}\nVPN: {data['vpn_name']}\nPrice: {data['vpn_price']}", "parse_mode": "HTML", "reply_markup": {"inline_keyboard": [[{"text": "📤 Send Details", "callback_data": f"vpn_deliver_{order_id}"}, {"text": "❌ Reject", "callback_data": f"ord_rej_{order_id}"}]]}})
+            send_msg(chat_id, f"✅ VPN order submitted!", reply_markup=main_kb(sender_id))
+            del user_states[chat_id]
+            del temp_data[chat_id]
+            return
+        elif state == "user_wait_screenshot":
+            data = temp_data[chat_id]
+            order_id = f"ORD-{int(time.time())}"
+            if "orders" not in db: db["orders"] = {}
+            db["orders"][order_id] = {"type": "proxy", "user_id": chat_id, "username": username, "category": data["category"], "qty": data["qty"], "total": data["total"], "method": data["method"], "trx": data["trx"], "status": "pending"}
+            save_data()
+            for adm in db.get("admins", [OWNER_ID]):
+                api_call("sendPhoto", {"chat_id": adm, "photo": photo_id, "caption": f"🔔 <b>Proxy Order!</b>\nID: {order_id}\nUser: @{username}\nCategory: {data['category']} | Qty: {data['qty']}", "parse_mode": "HTML", "reply_markup": {"inline_keyboard": [[{"text": "✅ Approve", "callback_data": f"ord_app_{order_id}"}, {"text": "❌ Reject", "callback_data": f"ord_rej_{order_id}"}]]}})
+            send_msg(chat_id, f"✅ Proxy order submitted!", reply_markup=main_kb(sender_id))
+            del user_states[chat_id]
+            del temp_data[chat_id]
+            return
 
     if text.startswith("/start"):
-        send_msg(chat_id, f"👋 <b>Welcome to Bot!</b>", reply_markup=main_kb(sender_id))
-
+        send_msg(chat_id, f"👋 <b>Welcome!</b>", reply_markup=main_kb(sender_id))
     elif "🛒 Buy Proxies" in text:
         proxies = db.get("proxies", {})
         if not proxies:
             send_msg(chat_id, f"❌ Proxy Stock empty!")
             return
-        kb = []
-        for cat, items in proxies.items():
-            if items:
-                price = items[0]["price"]
-                kb.append([{"text": f"🌐 {cat} — {price} ({len(items)} left)", "callback_data": f"buycat_{cat}"}])
+        kb = [[{"text": f"🌐 {cat} — {items[0]['price']} ({len(items)} left)", "callback_data": f"buycat_{cat}"}] for cat, items in proxies.items() if items]
         send_msg(chat_id, f"🌐 <b>Proxy Categories:</b>", reply_markup={"inline_keyboard": kb})
-
     elif "🔒 Buy VPN" in text:
         vpn_plans = db.get("vpn_plans", {})
         if not vpn_plans:
             send_msg(chat_id, f"❌ Kono VPN plan available nei!")
             return
-        kb = []
-        for vpn_name, info in vpn_plans.items():
-            stock_status = f"({info['stock']} left)" if info['stock'] > 0 else "(Stock Out ❌)"
-            kb.append([{"text": f"🔒 {vpn_name} — Price: {info['price']} {stock_status}", "callback_data": f"buyvpn_{vpn_name}"}])
+        kb = [[{"text": f"🔒 {name} — Price: {info['price']} ({info['stock']} left)", "callback_data": f"buyvpn_{name}"}] for name, info in vpn_plans.items()]
         send_msg(chat_id, f"🔒 <b>Available VPN Plans:</b>", reply_markup={"inline_keyboard": kb})
-
     elif "💰 Deposit Balance" in text:
         user_states[chat_id] = "dep_wait_amount"
-        send_msg(chat_id, f"💰 <b>Balance Deposit</b>\n\nAapni koto taka deposit korte chan? Taka sankhay likhe pathan:", reply_markup=cancel_kb())
-
+        send_msg(chat_id, f"💰 Koto taka deposit korte chan sankhay likhe pathan:", reply_markup=cancel_kb())
     elif "📊 Order History" in text:
-        orders = db.get("orders", {})
-        my_orders = [o for o in orders.values() if o["user_id"] == chat_id]
+        my_orders = [o for o in db.get("orders", {}).values() if o["user_id"] == chat_id]
         if not my_orders:
             send_msg(chat_id, "📜 No order history.")
             return
-        txt = "📊 <b>Your Orders:</b>\n\n"
-        for o in my_orders[-5:]:
-            item_name = o.get('category', o.get('vpn_name', 'Item'))
-            txt += f"📦 {item_name} | Total: {o['total']} | Status: <b>{o['status'].upper()}</b>\n"
+        txt = "📊 <b>Your Orders:</b>\n\n" + "".join([f"📦 {o.get('category', o.get('vpn_name'))} | Total: {o['total']} | Status: <b>{o['status'].upper()}</b>\n" for o in my_orders[-5:]])
         send_msg(chat_id, txt)
-
     elif "👤 My Profile" in text:
-        user_data = db.get("users", {}).get(str(sender_id), {})
-        balance = user_data.get("balance", 0.0)
-        send_msg(chat_id, f"👤 ID: <code>{sender_id}</code>\nUser: @{username}\n💰 Balance: <b>{balance}</b>")
-
+        bal = db.get("users", {}).get(str(sender_id), {}).get("balance", 0.0)
+        send_msg(chat_id, f"👤 ID: <code>{sender_id}</code>\n💰 Balance: <b>{bal}</b>")
     elif "📞 Support" in text:
-        sup_u = db.get("settings", {}).get("support", "anik2000")
-        send_msg(chat_id, f"🎧 Support: @{sup_u}")
-
+        send_msg(chat_id, f"🎧 Support: @{db.get('settings', {}).get('support', 'anik2000')}")
     elif "🛠 Admin Panel" in text and is_admin(sender_id):
         send_msg(chat_id, f"📊 <b>Admin Control Console</b>", reply_markup=admin_kb())
 
@@ -673,331 +477,210 @@ def handle_callback(call):
         delete_msg(chat_id, msg_id)
         send_msg(chat_id, "Cancelled.", reply_markup=main_kb(from_user_id))
 
-    elif data == "dep_pay_bkash":
-        bkash_no = db.get("settings", {}).get("bkash", "017XXXXXXXX")
-        amount = temp_data[chat_id]["dep_amount"]
-        temp_data[chat_id]["dep_method"] = "bKash"
+    elif data == "dep_pay_bkash" or data == "dep_pay_binance":
+        amt = temp_data[chat_id]["dep_amount"]
+        method = "bKash" if "bkash" in data else "Binance"
+        temp_data[chat_id]["dep_method"] = method
         user_states[chat_id] = "dep_wait_trx"
-        edit_msg(chat_id, msg_id, f"💳 <b>bKash Send Money</b>\nAmount: <b>{amount} BDT</b>\nNumber: <code>{bkash_no}</code>\n\nTrxID ti pathan:", reply_markup=cancel_kb())
-
-    elif data == "dep_pay_binance":
-        binance_id = db.get("settings", {}).get("binance", "123456789")
-        amount = temp_data[chat_id]["dep_amount"]
-        temp_data[chat_id]["dep_method"] = "Binance Pay"
-        user_states[chat_id] = "dep_wait_trx"
-        edit_msg(chat_id, msg_id, f"🔶 <b>Binance Pay</b>\nAmount: <b>{amount} USD</b>\nBinance ID: <code>{binance_id}</code>\n\nTransaction ID pathan:", reply_markup=cancel_kb())
+        edit_msg(chat_id, msg_id, f"💳 {method} Amount: <b>{amt}</b>\nTrxID pathan:", reply_markup=cancel_kb())
 
     elif data.startswith("dep_app_") and is_admin(from_user_id):
         dep_id = data.replace("dep_app_", "")
         load_data()
         dep = db.get("deposits", {}).get(dep_id)
-        if not dep or dep["status"] != "pending": return
-        user_target = dep["user_id"]
-        amount = dep["amount"]
-
-        if str(user_target) not in db["users"]:
-            db["users"][str(user_target)] = {"username": dep["username"], "balance": 0.0, "time": time.time()}
-        db["users"][str(user_target)]["balance"] += amount
-        dep["status"] = "approved"
-        save_data()
-
-        send_msg(user_target, f"✅ <b>Deposit Approved!</b>\nApnar account-e <b>{amount}</b> balance add kora hoyeche.")
-        edit_msg(chat_id, msg_id, f"✅ Deposit <code>{dep_id}</code> Approved Successfully!")
+        if dep and dep["status"] == "pending":
+            u_id = str(dep["user_id"])
+            if u_id not in db["users"]: db["users"][u_id] = {"balance": 0.0}
+            db["users"][u_id]["balance"] += dep["amount"]
+            dep["status"] = "approved"
+            save_data()
+            send_msg(int(u_id), f"✅ Deposit Approved! Balance added: {dep['amount']}")
+            edit_msg(chat_id, msg_id, f"✅ Deposit Approved!")
 
     elif data.startswith("dep_rej_") and is_admin(from_user_id):
         dep_id = data.replace("dep_rej_", "")
         load_data()
-        dep = db.get("deposits", {}).get(dep_id)
-        if not dep or dep["status"] != "pending": return
-        dep["status"] = "rejected"
-        save_data()
-        send_msg(dep["user_id"], "❌ Apnar deposit request-ti reject kora hoyeche.")
-        edit_msg(chat_id, msg_id, f"❌ Deposit <code>{dep_id}</code> Rejected.")
+        if dep_id in db.get("deposits", {}):
+            db["deposits"][dep_id]["status"] = "rejected"
+            save_data()
+            send_msg(db["deposits"][dep_id]["user_id"], "❌ Deposit rejected.")
+            edit_msg(chat_id, msg_id, "❌ Deposit Rejected.")
 
     elif data.startswith("buyvpn_"):
-        vpn_name = data.replace("buyvpn_", "")
-        v_info = db.get("vpn_plans", {}).get(vpn_name)
-        if not v_info: return
-        
-        if v_info["stock"] <= 0:
-            api_call("answerCallbackQuery", {"callback_query_id": call["id"], "text": "Sorry, this VPN plan is currently out of stock!", "show_alert": True})
-            return
-
-        temp_data[chat_id] = {"vpn_name": vpn_name, "vpn_price": v_info["price"]}
-        
-        pay_kb = {
-            "inline_keyboard": [
-                [{"text": "💰 Pay from Account Balance", "callback_data": "pay_vpn_balance"}],
-                [{"text": "🟢 bKash / Binance (Manual)", "callback_data": "pay_vpn_manual"}],
-                [{"text": "Cancel", "callback_data": "cancel_state", "style": "danger"}]
-            ]
-        }
-        edit_msg(chat_id, msg_id, f"🔒 <b>VPN Plan: {vpn_name}</b>\n📝 Details: {v_info['desc']}\n💰 Price: <b>{v_info['price']}</b>\n📦 Available Stock: <b>{v_info['stock']}</b>\n\nPayment method select korun:", reply_markup=pay_kb)
-
-    elif data == "pay_vpn_balance":
-        user_data = db.get("users", {}).get(str(chat_id), {})
-        balance = user_data.get("balance", 0.0)
-        
-        if chat_id not in temp_data or "vpn_name" not in temp_data[chat_id]:
-            edit_msg(chat_id, msg_id, "❌ Session expired or invalid selection. Please select VPN plan again from menu.")
-            return
-
-        v_name = temp_data[chat_id]["vpn_name"]
-        v_price = temp_data[chat_id]["vpn_price"]
-        v_info = db["vpn_plans"].get(v_name)
-
+        v_name = data.replace("buyvpn_", "")
+        v_info = db.get("vpn_plans", {}).get(v_name)
         if not v_info or v_info["stock"] <= 0:
             api_call("answerCallbackQuery", {"callback_query_id": call["id"], "text": "Stock out!", "show_alert": True})
             return
+        temp_data[chat_id] = {"vpn_name": v_name, "vpn_price": v_info["price"]}
+        pay_kb = {"inline_keyboard": [[{"text": "💰 Pay from Wallet", "callback_data": "pay_vpn_balance"}], [{"text": "🟢 Manual Payment", "callback_data": "pay_vpn_manual"}]]}
+        edit_msg(chat_id, msg_id, f"🔒 <b>{v_name}</b>\nPrice: <b>{v_info['price']}</b>\nSelect payment method:", reply_markup=pay_kb)
 
-        if balance < v_price:
+    elif data == "pay_vpn_balance":
+        if chat_id not in temp_data: return
+        v_name = temp_data[chat_id]["vpn_name"]
+        v_price = temp_data[chat_id]["vpn_price"]
+        u_key = str(chat_id)
+        bal = db.get("users", {}).get(u_key, {}).get("balance", 0.0)
+        if bal < v_price:
             api_call("answerCallbackQuery", {"callback_query_id": call["id"], "text": "Insufficient balance!", "show_alert": True})
             return
-
-        db["users"][str(chat_id)]["balance"] -= v_price
+        db["users"][u_key]["balance"] -= v_price
         db["vpn_plans"][v_name]["stock"] -= 1
-
         order_id = f"VPN-{int(time.time())}"
         if "orders" not in db: db["orders"] = {}
-        db["orders"][order_id] = {
-            "type": "vpn", "user_id": chat_id, "username": username,
-            "vpn_name": v_name, "total": v_price, "method": "Account Balance", "status": "pending_admin_delivery"
-        }
+        db["orders"][order_id] = {"type": "vpn", "user_id": chat_id, "username": username, "vpn_name": v_name, "total": v_price, "method": "Wallet", "status": "pending_admin_delivery"}
         save_data()
-
-        admin_caption = f"""🔔 <b>New VPN Order (Paid via Balance)!</b>
-🆔 Order ID: <code>{order_id}</code>
-👤 User: @{username} (<code>{chat_id}</code>)
-🔒 VPN Plan: <b>{v_name}</b> | Paid: <b>{v_price}</b>"""
-
-        admin_kb_markup = {"inline_keyboard": [[{"text": "📤 Send VPN Details to User", "callback_data": f"vpn_deliver_{order_id}", "style": "success"}]]}
-
         for adm in db.get("admins", [OWNER_ID]):
-            res_msg = api_call("sendMessage", {"chat_id": adm, "text": admin_caption, "parse_mode": "HTML", "reply_markup": admin_kb_markup})
-            if res_msg.get("ok"):
-                if "admin_msgs" not in db["orders"][order_id]: db["orders"][order_id]["admin_msgs"] = {}
-                db["orders"][order_id]["admin_msgs"][str(adm)] = res_msg["result"]["message_id"]
-        save_data()
-
-        edit_msg(chat_id, msg_id, f"✅ VPN Order <code>{order_id}</code> successful! Balance deducted: {v_price}.\nAdmin khub shighri VPN details pathiye dibe.")
+            api_call("sendMessage", {"chat_id": adm, "text": f"🔔 <b>VPN Order (Wallet)!</b>\nID: {order_id}\nUser: @{username}\nVPN: {v_name}", "parse_mode": "HTML", "reply_markup": {"inline_keyboard": [[{"text": "📤 Send Details", "callback_data": f"vpn_deliver_{order_id}"}]]}})
+        edit_msg(chat_id, msg_id, f"✅ Order successful! Admin details pathiye dibe.")
         send_msg(chat_id, "Main menu:", reply_markup=main_kb(chat_id))
-        if chat_id in user_states: del user_states[chat_id]
-        if chat_id in temp_data: del temp_data[chat_id]
+        del temp_data[chat_id]
 
     elif data == "pay_vpn_manual":
-        bkash_no = db.get("settings", {}).get("bkash", "017XXXXXXXX")
-        if chat_id not in temp_data or "vpn_price" not in temp_data[chat_id]:
-            edit_msg(chat_id, msg_id, "❌ Session expired.")
-            return
-        v_price = temp_data[chat_id]["vpn_price"]
-        temp_data[chat_id]["method"] = "bKash/Binance"
+        if chat_id not in temp_data: return
         user_states[chat_id] = "vpn_wait_trx"
-        edit_msg(chat_id, msg_id, f"💳 <b>VPN Payment</b>\nAmount: <b>{v_price}</b>\nbKash: <code>{bkash_no}</code>\n\nTrxID pathan:", reply_markup=cancel_kb())
+        edit_msg(chat_id, msg_id, f"💳 bKash/Binance TrxID pathan:", reply_markup=cancel_kb())
 
     elif data.startswith("vpn_deliver_") and is_admin(from_user_id):
         order_id = data.replace("vpn_deliver_", "")
         user_states[chat_id] = "adm_wait_vpn_details"
         temp_data[chat_id] = {"deliver_order_id": order_id}
-        edit_msg(chat_id, msg_id, f"📥 Order ID <code>{order_id}</code> er jonno <b>VPN Details</b> likhe pathan:")
+        edit_msg(chat_id, msg_id, f"📥 VPN Details likhe pathan:")
 
     elif data.startswith("buycat_"):
         cat = data.replace("buycat_", "")
         stock = len(db["proxies"].get(cat, []))
         if stock == 0: return
-        min_p = db.get("settings", {}).get("min_purchase", 1)
-        max_p = db.get("settings", {}).get("max_purchase", 20)
         temp_data[chat_id] = {"category": cat}
         user_states[chat_id] = "user_wait_qty"
-        edit_msg(chat_id, msg_id, f"🌐 <b>{cat}</b>\nStock: <b>{stock}</b>\nLimit: <b>{min_p} - {max_p}</b>\n\nKoto gulo proxy kinte chan?", reply_markup=cancel_kb())
+        edit_msg(chat_id, msg_id, f"🌐 <b>{cat}</b> (Stock: {stock})\nKoto gulo proxy kinte chan?", reply_markup=cancel_kb())
 
     elif data == "pay_balance":
-        user_data = db.get("users", {}).get(str(chat_id), {})
-        balance = user_data.get("balance", 0.0)
         if chat_id not in temp_data: return
         total = temp_data[chat_id]["total"]
         cat = temp_data[chat_id]["category"]
         qty = temp_data[chat_id]["qty"]
-
-        if balance < total:
+        u_key = str(chat_id)
+        bal = db.get("users", {}).get(u_key, {}).get("balance", 0.0)
+        if bal < total:
             api_call("answerCallbackQuery", {"callback_query_id": call["id"], "text": "Insufficient balance!", "show_alert": True})
             return
-
-        available_proxies = db["proxies"].get(cat, [])
-        if len(available_proxies) < qty:
+        proxies_list = db["proxies"].get(cat, [])
+        if len(proxies_list) < qty:
             api_call("answerCallbackQuery", {"callback_query_id": call["id"], "text": "Stock insufficient!", "show_alert": True})
             return
-
-        db["users"][str(chat_id)]["balance"] -= total
-        assigned = available_proxies[:qty]
-        db["proxies"][cat] = available_proxies[qty:]
-        
+        db["users"][u_key]["balance"] -= total
+        assigned = proxies_list[:qty]
+        db["proxies"][cat] = proxies_list[qty:]
         order_id = f"ORD-{int(time.time())}"
         if "orders" not in db: db["orders"] = {}
-        db["orders"][order_id] = {
-            "type": "proxy", "user_id": chat_id, "username": username,
-            "category": cat, "qty": qty, "total": total, "method": "Account Balance", "trx": "Auto-Balance", "status": "approved"
-        }
+        db["orders"][order_id] = {"type": "proxy", "user_id": chat_id, "username": username, "category": cat, "qty": qty, "total": total, "method": "Wallet", "status": "approved"}
         save_data()
-
-        proxy_text = "\n".join([p["proxy"] for p in assigned])
-        file_path = f"{order_id}_proxies.txt"
-        with open(file_path, "w", encoding="utf-8") as f: f.write(proxy_text)
         
-        url = f"{BASE_URL}/sendDocument"
+        file_path = f"{order_id}.txt"
+        with open(file_path, "w", encoding="utf-8") as f: f.write("\n".join([p["proxy"] for p in assigned]))
         with open(file_path, "rb") as doc_file:
-            files = {"document": (f"{cat}_proxies.txt", doc_file)}
-            payload = {"chat_id": chat_id, "caption": f"✅ <b>Proxies ({qty} pcs):</b>", "parse_mode": "HTML"}
-            session.post(url, data=payload, files=files)
+            session.post(f"{BASE_URL}/sendDocument", data={"chat_id": chat_id, "caption": f"✅ Proxies ({qty} pcs):"}, files={"document": doc_file})
         if os.path.exists(file_path): os.remove(file_path)
-
-        edit_msg(chat_id, msg_id, f"✅ Order <code>{order_id}</code> Successful!")
+        
+        edit_msg(chat_id, msg_id, f"✅ Order Successful!")
         send_msg(chat_id, "Main menu:", reply_markup=main_kb(chat_id))
-        if chat_id in user_states: del user_states[chat_id]
-        if chat_id in temp_data: del temp_data[chat_id]
+        del temp_data[chat_id]
 
-    elif data == "pay_bkash":
-        bkash_no = db.get("settings", {}).get("bkash", "017XXXXXXXX")
+    elif data == "pay_bkash" or data == "pay_binance":
         if chat_id not in temp_data: return
-        total = temp_data[chat_id]["total"]
-        temp_data[chat_id]["method"] = "bKash"
+        method = "bKash" if "bkash" in data else "Binance"
+        temp_data[chat_id]["method"] = method
         user_states[chat_id] = "user_wait_trx"
-        edit_msg(chat_id, msg_id, f"💳 bKash Amount: <b>{total} BDT</b>\nNumber: <code>{bkash_no}</code>\n\nTrxID pathan:", reply_markup=cancel_kb())
-
-    elif data == "pay_binance":
-        binance_id = db.get("settings", {}).get("binance", "123456789")
-        if chat_id not in temp_data: return
-        total = temp_data[chat_id]["total"]
-        temp_data[chat_id]["method"] = "Binance Pay"
-        user_states[chat_id] = "user_wait_trx"
-        edit_msg(chat_id, msg_id, f"🔶 Binance Pay Amount: <b>{total} USD</b>\nID: <code>{binance_id}</code>\n\nTrxID pathan:", reply_markup=cancel_kb())
+        edit_msg(chat_id, msg_id, f"💳 {method} TrxID pathan:", reply_markup=cancel_kb())
 
     elif data.startswith("ord_app_") and is_admin(from_user_id):
         order_id = data.replace("ord_app_", "")
         load_data()
         order = db.get("orders", {}).get(order_id)
-        if not order or order["status"] != "pending": return
-        order["status"] = "approved"
-        save_data()
-        send_msg(order["user_id"], f"✅ Order <code>{order_id}</code> approved!")
-        edit_msg(chat_id, msg_id, f"✅ Order Approved.")
+        if order:
+            order["status"] = "approved"
+            save_data()
+            send_msg(order["user_id"], f"✅ Order approved!")
+            edit_msg(chat_id, msg_id, f"✅ Approved.")
 
     elif data.startswith("ord_rej_") and is_admin(from_user_id):
         order_id = data.replace("ord_rej_", "")
         load_data()
         order = db.get("orders", {}).get(order_id)
-        if not order or order["status"] != "pending": return
-        order["status"] = "rejected"
-        save_data()
-        send_msg(order["user_id"], f"❌ Order <code>{order_id}</code> rejected.")
-        edit_msg(chat_id, msg_id, f"❌ Order Rejected.")
+        if order:
+            order["status"] = "rejected"
+            save_data()
+            send_msg(order["user_id"], f"❌ Order rejected.")
+            edit_msg(chat_id, msg_id, f"❌ Rejected.")
 
     elif is_admin(from_user_id):
         if data == "adm_set_supabase":
             user_states[chat_id] = "adm_set_supabase_url"
-            edit_msg(chat_id, msg_id, "🔗 Apnar Supabase <b>Project URL</b> ti likhe pathan (e.g. https://xxxx.supabase.co):", reply_markup=cancel_kb())
-
+            edit_msg(chat_id, msg_id, "🔗 Supabase Project URL likhe pathan:", reply_markup=cancel_kb())
         elif data == "adm_add_proxy":
             user_states[chat_id] = "adm_wait_cat"
             edit_msg(chat_id, msg_id, "📌 Category name likhun:", reply_markup=cancel_kb())
-
         elif data == "adm_del_proxy":
             proxies = db.get("proxies", {})
             if not proxies:
                 edit_msg(chat_id, msg_id, "No stock.", reply_markup={"inline_keyboard": [[{"text": "Back", "callback_data": "admin_main"}]]})
                 return
-            kb = [[{"text": f"Delete: {cat} ({len(items)})", "callback_data": f"delcat_{cat}", "style": "danger"}] for cat, items in proxies.items()]
+            kb = [[{"text": f"Delete: {cat}", "callback_data": f"delcat_{cat}"}] for cat in proxies.keys()]
             kb.append([{"text": "Back", "callback_data": "admin_main"}])
-            edit_msg(chat_id, msg_id, "Select category to delete:", reply_markup={"inline_keyboard": kb})
-
+            edit_msg(chat_id, msg_id, "Select category:", reply_markup={"inline_keyboard": kb})
         elif data.startswith("delcat_"):
             cat = data.replace("delcat_", "")
             if cat in db["proxies"]:
                 del db["proxies"][cat]
                 save_data()
-            edit_msg(chat_id, msg_id, f"✅ Deleted category: <b>{cat}</b>", reply_markup={"inline_keyboard": [[{"text": "Back", "callback_data": "admin_main"}]]})
-
+            edit_msg(chat_id, msg_id, f"✅ Deleted category: {cat}", reply_markup={"inline_keyboard": [[{"text": "Back", "callback_data": "admin_main"}]]})
         elif data == "adm_add_vpn":
             user_states[chat_id] = "adm_wait_vpn_name"
-            edit_msg(chat_id, msg_id, "📌 VPN Name likhun (e.g. Premium 30 Days):", reply_markup=cancel_kb())
-
+            edit_msg(chat_id, msg_id, "📌 VPN Name likhun:", reply_markup=cancel_kb())
         elif data == "adm_manage_vpn":
             vpn_plans = db.get("vpn_plans", {})
             if not vpn_plans:
                 edit_msg(chat_id, msg_id, "Kono VPN plan nei.", reply_markup={"inline_keyboard": [[{"text": "Back", "callback_data": "admin_main"}]]})
                 return
-            kb = []
-            for v_name, info in vpn_plans.items():
-                kb.append([
-                    {"text": f"{v_name} (Stock: {info['stock']})", "callback_data": "none"},
-                    {"text": "✏️ Edit Stock", "callback_data": f"edivpn_{v_name}", "style": "success"},
-                    {"text": "❌ Delete", "callback_data": f"delvpn_{v_name}", "style": "danger"}
-                ])
+            kb = [[{"text": f"{name} (Stock: {info['stock']})", "callback_data": "none"}, {"text": "Edit Stock", "callback_data": f"edivpn_{name}"}, {"text": "Del", "callback_data": f"delvpn_{name}"}] for name, info in vpn_plans.items()]
             kb.append([{"text": "Back", "callback_data": "admin_main"}])
-            edit_msg(chat_id, msg_id, "🛠 <b>Manage VPN Plans & Stock:</b>", reply_markup={"inline_keyboard": kb})
-
+            edit_msg(chat_id, msg_id, "🛠 Manage VPN:", reply_markup={"inline_keyboard": kb})
         elif data.startswith("edivpn_"):
-            v_name = data.replace("edivpn_", "")
             user_states[chat_id] = "adm_edit_vpn_stock_val"
-            temp_data[chat_id] = {"edit_vpn_name": v_name}
-            edit_msg(chat_id, msg_id, f"✏️ VPN <b>{v_name}</b> er notun <b>stock number</b> likhe pathan:", reply_markup=cancel_kb())
-
+            temp_data[chat_id] = {"edit_vpn_name": data.replace("edivpn_", "")}
+            edit_msg(chat_id, msg_id, "✏️ Notun stock number pathan:", reply_markup=cancel_kb())
         elif data.startswith("delvpn_"):
             v_name = data.replace("delvpn_", "")
             if v_name in db["vpn_plans"]:
                 del db["vpn_plans"][v_name]
                 save_data()
-            edit_msg(chat_id, msg_id, f"✅ Deleted VPN plan: <b>{v_name}</b>", reply_markup={"inline_keyboard": [[{"text": "Back", "callback_data": "adm_manage_vpn"}]]})
-
+            edit_msg(chat_id, msg_id, f"✅ Deleted VPN!", reply_markup={"inline_keyboard": [[{"text": "Back", "callback_data": "admin_manage_vpn"}]]})
         elif data == "adm_balance_menu":
             user_states[chat_id] = "adm_wait_user_id_for_balance"
             edit_msg(chat_id, msg_id, "👤 User ID pathan:", reply_markup=cancel_kb())
-
         elif data == "adm_broadcast":
             user_states[chat_id] = "adm_broadcast"
             edit_msg(chat_id, msg_id, "📢 Broadcast message pathan:", reply_markup=cancel_kb())
-
         elif data == "adm_manage_admins":
             adms = db.get("admins", [OWNER_ID])
             kb = [[{"text": f"👤 {aid}", "callback_data": "none"}] for aid in adms]
-            kb.append([{"text": "➕ Add Admin", "callback_data": "adm_add_admin_btn", "style": "success"}])
+            kb.append([{"text": "➕ Add Admin", "callback_data": "adm_add_admin_btn"}])
             kb.append([{"text": "Back", "callback_data": "admin_main"}])
-            edit_msg(chat_id, msg_id, "👑 <b>Admin List</b>", reply_markup={"inline_keyboard": kb})
-
+            edit_msg(chat_id, msg_id, "👑 Admins:", reply_markup={"inline_keyboard": kb})
         elif data == "adm_add_admin_btn":
             user_states[chat_id] = "adm_add_admin"
             edit_msg(chat_id, msg_id, "Notun Admin ID pathan:", reply_markup=cancel_kb())
-
-        elif data == "adm_settings":
-            st = db.get("settings", {})
-            txt = f"⚙️ <b>Settings:</b>\nbKash: <code>{st.get('bkash')}</code>\nBinance: <code>{st.get('binance')}</code>"
-            kb = [
-                [{"text": "Change bKash", "callback_data": "set_bk_btn"}],
-                [{"text": "Change Binance", "callback_data": "set_bi_btn"}],
-                [{"text": "Back", "callback_data": "admin_main"}]
-            ]
-            edit_msg(chat_id, msg_id, txt, reply_markup={"inline_keyboard": kb})
-
-        elif data == "set_bk_btn":
-            user_states[chat_id] = "adm_set_bkash"
-            edit_msg(chat_id, msg_id, "Notun bKash number pathan:", reply_markup=cancel_kb())
-
-        elif data == "set_bi_btn":
-            user_states[chat_id] = "adm_set_binance"
-            edit_msg(chat_id, msg_id, "Notun Binance ID pathan:", reply_markup=cancel_kb())
-
         elif data == "adm_stats":
-            total_users = len(db.get("users", {}))
-            total_proxies = sum([len(v) for v in db.get("proxies", {}).values()])
-            total_vpns = len(db.get("vpn_plans", {}))
-            edit_msg(chat_id, msg_id, f"📊 <b>Stats:</b>\nUsers: {total_users}\nProxies: {total_proxies}\nVPN Plans: {total_vpns}", reply_markup={"inline_keyboard": [[{"text": "Back", "callback_data": "admin_main"}]]})
-
+            edit_msg(chat_id, msg_id, f"📊 Stats:\nUsers: {len(db.get('users', {}))}\nProxies: {sum([len(v) for v in db.get('proxies', {}).values()])}", reply_markup={"inline_keyboard": [[{"text": "Back", "callback_data": "admin_main"}]]})
         elif data == "admin_main":
-            edit_msg(chat_id, msg_id, f"📊 <b>Admin Control Console</b>", reply_markup=admin_kb())
+            edit_msg(chat_id, msg_id, "📊 Admin Control Console", reply_markup=admin_kb())
 
 def main():
     offset = None
     executor = ThreadPoolExecutor(max_workers=20)
-    print("🚀 Bot is running with Telegram Admin Panel Supabase configuration setup...")
+    print("🚀 Bot is running with Supabase REST API (No HTTPCore/Python 3.14 issue)...")
     while True:
         try:
             updates = api_call("getUpdates", {"timeout": 30, "offset": offset})
