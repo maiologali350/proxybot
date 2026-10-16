@@ -7,14 +7,15 @@ import threading
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
+from supabase import create_client, Client
 
 # ================= Load Environment Variables =================
 load_dotenv()
-BOT_TOKEN = "8660352533:AAHgcFG8EADe-m1HiIgUYnfJub9GCjbGQMM"
-OWNER_ID_STR = "903018274"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8660352533:AAHgcFG8EADe-m1HiIgUYnfJub9GCjbGQMM")
+OWNER_ID_STR = os.getenv("OWNER_ID", "903018274")
 
 if not BOT_TOKEN or not OWNER_ID_STR:
-    print("❌ Error: Please configure BOT_TOKEN and OWNER_ID inside your .env file!")
+    print("❌ Error: Please configure BOT_TOKEN and OWNER_ID!")
     exit(1)
 
 OWNER_ID = int(OWNER_ID_STR)
@@ -22,8 +23,8 @@ OWNER_ID = int(OWNER_ID_STR)
 BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 FILE_URL = f"https://api.telegram.org/file/bot{BOT_TOKEN}/"
 
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__)) if "__file__" in locals() else os.getcwd()
-DB_FILE = os.path.join(CURRENT_DIR, "proxy_bot_data.json")
+# Global Supabase Client
+supabase: Client = None
 
 file_lock = threading.Lock()
 BD_TZ = timezone(timedelta(hours=6))
@@ -40,25 +41,49 @@ db = {
         "max_purchase": 20,
         "bkash": "017XXXXXXXX (Personal)",
         "binance": "123456789",
-        "support": "anik2000"
+        "support": "anik2000",
+        "supabase_url": "",
+        "supabase_key": ""
     }
 }
 
 user_states = {}
 temp_data = {}
 
+def init_supabase():
+    global supabase
+    s_url = db.get("settings", {}).get("supabase_url", "")
+    s_key = db.get("settings", {}).get("supabase_key", "")
+    if s_url and s_key:
+        try:
+            supabase = create_client(s_url, s_key)
+            print("✅ Connected to Supabase Successfully!")
+        except Exception as e:
+            print(f"❌ Supabase Connection Error: {e}")
+
 def load_data():
     global db
-    if os.path.exists(DB_FILE):
-        try:
-            with open(DB_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    db.update(data)
-        except Exception:
-            pass
+    # Local fallback load first
     if OWNER_ID not in db["admins"]:
         db["admins"].append(OWNER_ID)
+    if "settings" not in db: db["settings"] = {}
+    
+    s_url = db["settings"].get("supabase_url", "")
+    s_key = db["settings"].get("supabase_key", "")
+    
+    if s_url and s_key:
+        try:
+            global supabase
+            if not supabase:
+                supabase = create_client(s_url, s_key)
+            res = supabase.table("bot_storage").select("*").eq("key", "main_db").execute()
+            if res.data and len(res.data) > 0:
+                data = res.data[0].get("value", {})
+                if isinstance(data, dict):
+                    db.update(data)
+        except Exception as e:
+            print(f"Error loading from Supabase: {e}")
+
     if "support" not in db["settings"]:
         db["settings"]["support"] = "anik2000"
     if "deposits" not in db:
@@ -68,13 +93,20 @@ def load_data():
 
 def save_data():
     with file_lock:
-        try:
-            with open(DB_FILE, "w", encoding="utf-8") as f:
-                json.dump(db, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            print(f"Error saving data: {e}")
+        s_url = db["settings"].get("supabase_url", "")
+        s_key = db["settings"].get("supabase_key", "")
+        if s_url and s_key:
+            try:
+                global supabase
+                if not supabase:
+                    supabase = create_client(s_url, s_key)
+                supabase.table("bot_storage").upsert({"key": "main_db", "value": db}).execute()
+            except Exception as e:
+                print(f"Error saving to Supabase: {e}")
 
+# Initial load
 load_data()
+init_supabase()
 
 session = requests.Session()
 
@@ -133,6 +165,7 @@ def admin_kb():
         [{"text": "➕ Add VPN Plan", "callback_data": "adm_add_vpn", "style": "success"}],
         [{"text": "🛠 Manage / Edit VPN Stock & Plans", "callback_data": "adm_manage_vpn", "style": "primary"}],
         [{"text": "💰 Add/Cut User Balance", "callback_data": "adm_balance_menu", "style": "success"}],
+        [{"text": "⚙️ Set Supabase Config", "callback_data": "adm_set_supabase", "style": "success"}],
         [{"text": "📢 Broadcast Message", "callback_data": "adm_broadcast", "style": "primary"}],
         [{"text": "👑 Manage Admins", "callback_data": "adm_manage_admins", "style": "primary"}],
         [{"text": "⚙️ Set Limits & Payments", "callback_data": "adm_settings", "style": "primary"}],
@@ -162,7 +195,27 @@ def handle_message(msg):
     if chat_id in user_states:
         state = user_states[chat_id]
         
-        if state == "adm_wait_cat" and text:
+        if state == "adm_set_supabase_url" and text:
+            temp_data[chat_id] = {"sup_url": text}
+            user_states[chat_id] = "adm_set_supabase_key"
+            send_msg(chat_id, f"🔑 Ekhon apnar Supabase <b>API Key (anon/service_role)</b> ti likhe pathan:", reply_markup=cancel_kb())
+            return
+
+        elif state == "adm_set_supabase_key" and text:
+            s_url = temp_data[chat_id]["sup_url"]
+            s_key = text
+            if "settings" not in db: db["settings"] = {}
+            db["settings"]["supabase_url"] = s_url
+            db["settings"]["supabase_key"] = s_key
+            save_data()
+            init_supabase()
+            
+            del user_states[chat_id]
+            del temp_data[chat_id]
+            send_msg(chat_id, f"✅ Supabase URL & Key successfully updated and connected!", reply_markup=main_kb(sender_id))
+            return
+
+        elif state == "adm_wait_cat" and text:
             temp_data[chat_id] = {"category": text}
             user_states[chat_id] = "adm_wait_price"
             send_msg(chat_id, f"📌 Category: <b>{text}</b>\n\nEkhon ei category-er <b>per proxy price</b> koto hobe ta likhe pathan:")
@@ -412,7 +465,6 @@ def handle_message(msg):
             send_msg(chat_id, f"📤 Ekhon payment-er <b>Screenshot (Photo)</b> upload korun:", reply_markup=cancel_kb())
             return
 
-        # --- Admin Sending VPN Details (FIXED & FULLY FUNCTIONAL) ---
         elif state == "adm_wait_vpn_details" and is_admin(chat_id):
             order_id = temp_data[chat_id]["deliver_order_id"]
             vpn_details = text
@@ -423,11 +475,9 @@ def handle_message(msg):
                 save_data()
                 user_target = order["user_id"]
                 
-                # Send VPN details to user
                 send_msg(user_target, f"✅ <b>Apnar VPN Order Approved & Delivered!</b>\n\n📦 Order ID: <code>{order_id}</code>\n🔒 VPN Plan: <b>{order['vpn_name']}</b>\n\n🔑 <b>VPN Details:</b>\n{vpn_details}")
-                send_msg(chat_id, f"✅ VPN details successfully delivered to user for order <code>{order_id}</code>!", reply_markup=main_kb(chat_id))
+                send_msg(chat_id, f"✅ VPN details successfully delivered to user for order <code>{order_id}</code>!", reply_markup=main_kb(sender_id))
 
-                # Update Admin message caption
                 admin_msgs = order.get("admin_msgs", {})
                 for adm_id, adm_msg_id in admin_msgs.items():
                     try:
@@ -623,7 +673,6 @@ def handle_callback(call):
         delete_msg(chat_id, msg_id)
         send_msg(chat_id, "Cancelled.", reply_markup=main_kb(from_user_id))
 
-    # --- Deposit Callbacks ---
     elif data == "dep_pay_bkash":
         bkash_no = db.get("settings", {}).get("bkash", "017XXXXXXXX")
         amount = temp_data[chat_id]["dep_amount"]
@@ -665,7 +714,6 @@ def handle_callback(call):
         send_msg(dep["user_id"], "❌ Apnar deposit request-ti reject kora hoyeche.")
         edit_msg(chat_id, msg_id, f"❌ Deposit <code>{dep_id}</code> Rejected.")
 
-    # --- VPN Buy Callbacks ---
     elif data.startswith("buyvpn_"):
         vpn_name = data.replace("buyvpn_", "")
         v_info = db.get("vpn_plans", {}).get(vpn_name)
@@ -746,14 +794,12 @@ def handle_callback(call):
         user_states[chat_id] = "vpn_wait_trx"
         edit_msg(chat_id, msg_id, f"💳 <b>VPN Payment</b>\nAmount: <b>{v_price}</b>\nbKash: <code>{bkash_no}</code>\n\nTrxID pathan:", reply_markup=cancel_kb())
 
-    # --- Fixed VPN Deliver Callback ---
     elif data.startswith("vpn_deliver_") and is_admin(from_user_id):
         order_id = data.replace("vpn_deliver_", "")
         user_states[chat_id] = "adm_wait_vpn_details"
         temp_data[chat_id] = {"deliver_order_id": order_id}
-        edit_msg(chat_id, msg_id, f"📥 Order ID <code>{order_id}</code> er jonno <b>VPN Details (Username, Password, Config)</b> likhe pathan:")
+        edit_msg(chat_id, msg_id, f"📥 Order ID <code>{order_id}</code> er jonno <b>VPN Details</b> likhe pathan:")
 
-    # --- Proxy Buy Callbacks ---
     elif data.startswith("buycat_"):
         cat = data.replace("buycat_", "")
         stock = len(db["proxies"].get(cat, []))
@@ -845,9 +891,12 @@ def handle_callback(call):
         send_msg(order["user_id"], f"❌ Order <code>{order_id}</code> rejected.")
         edit_msg(chat_id, msg_id, f"❌ Order Rejected.")
 
-    # --- Admin Panel Management ---
     elif is_admin(from_user_id):
-        if data == "adm_add_proxy":
+        if data == "adm_set_supabase":
+            user_states[chat_id] = "adm_set_supabase_url"
+            edit_msg(chat_id, msg_id, "🔗 Apnar Supabase <b>Project URL</b> ti likhe pathan (e.g. https://xxxx.supabase.co):", reply_markup=cancel_kb())
+
+        elif data == "adm_add_proxy":
             user_states[chat_id] = "adm_wait_cat"
             edit_msg(chat_id, msg_id, "📌 Category name likhun:", reply_markup=cancel_kb())
 
@@ -948,7 +997,7 @@ def handle_callback(call):
 def main():
     offset = None
     executor = ThreadPoolExecutor(max_workers=20)
-    print("🚀 Bot is running with Full VPN Delivery feature fixed...")
+    print("🚀 Bot is running with Telegram Admin Panel Supabase configuration setup...")
     while True:
         try:
             updates = api_call("getUpdates", {"timeout": 30, "offset": offset})
